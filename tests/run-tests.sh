@@ -202,15 +202,20 @@ r=$(guard "$H"); check "a pull request adding any workflow needs sign-off" failu
 HEADSHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # also used by the pr-review-status tests
 OLDSHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 echo "tier2-review-check (experimental)"
-if [ ! -f "$KIT/optional/scripts/tier2-review-check.sh" ]; then
-  printf '  skip  optional tier2-review-check is not installed here\n'
+# Test the installed gate (scripts/) first, then the packaged copy (optional/); skip only if neither exists.
+T2_SCRIPT=""
+for c in "$KIT/scripts/tier2-review-check.sh" "$KIT/optional/scripts/tier2-review-check.sh"; do
+  [ -f "$c" ] && { T2_SCRIPT="$c"; break; }
+done
+if [ -z "$T2_SCRIPT" ]; then
+  printf '  skip  tier2-review-check is not installed or packaged here\n'
 else
 rev() { printf '{"id":%s,"user":{"login":"%s"},"state":"%s","commit_id":"%s","submitted_at":"%s","body":"%s","html_url":"https://x/r%s"}' "$RANDOM" "$1" "$2" "$3" "$4" "${5:-}" "$RANDOM"; }
 prinfo() { # labels-json cross
   printf '{"headRefOid":"%s","isCrossRepository":%s,"labels":%s}\n' "$HEADSHA" "${2:-false}" "$1" > "$FIX/prinfo.json"
 }
 t2() { # reviewer-login
-  ( GH_REPO=o/r PR_NUMBER=5 REVIEWER_LOGIN="$1" bash "$KIT/optional/scripts/tier2-review-check.sh" ) \
+  ( GH_REPO=o/r PR_NUMBER=5 REVIEWER_LOGIN="$1" bash "$T2_SCRIPT" ) \
     > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL
 }
 C=codex-bot
