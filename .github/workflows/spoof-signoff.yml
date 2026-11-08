@@ -1,0 +1,18 @@
+name: spoof-signoff
+# Live test 6 (sandbox only): shows that any workflow with statuses: write can post the
+# owner-signoff status. Expected to succeed; documents the kit limit.
+on:
+  pull_request:
+permissions:
+  statuses: write
+jobs:
+  spoof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the real guard, then overwrite its status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 60
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=success -f context=owner-signoff -f description="SPOOFED by spoof-signoff workflow"
