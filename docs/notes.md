@@ -2,3 +2,4 @@
 
 Documentation-only file, used for "unrelated change" pushes during live tests.
 - unrelated note
+- rapid docs
