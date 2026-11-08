@@ -82,6 +82,14 @@ port_lock() {
   done
 }
 port_unlock() { exec 9>&-; }
+# Keep each task's .ai-task.env (port, database and connection settings) out of git, so a
+# rescue commit can never include it. Called by start and restore before the file is written.
+exclude_task_env() {
+  local exclude
+  exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$exclude")"
+  grep -qx '.ai-task.env' "$exclude" 2>/dev/null || echo '.ai-task.env' >> "$exclude"
+}
 pick_port() { # name
   local h i p
   h=$(printf '%s' "$1" | cksum | awk '{print $1}')
@@ -114,7 +122,7 @@ unpushed_count() { git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null
 
 ignored_entries() { # worktree -> ignored paths (folders end in "/"), one per line
   local rec
-  git -C "$1" status --porcelain=v1 --ignored -z | while IFS= read -r -d '' rec; do
+  git -C "$1" status --porcelain=v1 --ignored --untracked-files=normal -z | while IFS= read -r -d '' rec; do
     case "$rec" in '!! '*) printf '%s\n' "${rec#!! }" ;; esac
   done
 }
@@ -156,9 +164,7 @@ start)
   port="$(pick_port "$name")" || die "no free port in $PORT_BASE..$((PORT_BASE + PORT_RANGE - 1))"
 
   git check-ignore -q "$WORKTREE_DIR/probe" || echo "warning: $WORKTREE_DIR/ is not gitignored; add it to .gitignore" >&2
-  exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-  mkdir -p "$(dirname "$exclude")"
-  grep -qx '.ai-task.env' "$exclude" 2>/dev/null || echo '.ai-task.env' >> "$exclude"
+  exclude_task_env
 
   db=""; db_created=0
   [ -n "$DB_PREFIX" ] && db="${DB_PREFIX}_$(printf '%s' "$name" | tr '-' '_')"
@@ -253,7 +259,7 @@ list)
     case "$wt" in "$ROOT/$WORKTREE_DIR/"*) ;; *) continue ;; esac
     name="$(basename "$wt")"
     branch="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
-    dirty="$( (git -C "$wt" status --porcelain 2>/dev/null || true) | wc -l | tr -d ' ')"
+    dirty="$( (git -C "$wt" status --porcelain --untracked-files=normal 2>/dev/null || true) | wc -l | tr -d ' ')"
     ahead="$(unpushed_count "$wt")"
     port="$( (grep '^PORT=' "$wt/.ai-task.env" 2>/dev/null || true) | cut -d= -f2)"
     printf '%-24s %-28s %-6s %-9s %-12s %s\n' "$name" "${branch:-detached}" "$dirty" "$ahead" "$(pr_label "$branch")" "${port:--}"
@@ -276,7 +282,8 @@ finish)
   # Prune, so a branch deleted on GitHub no longer counts as a copy of these commits. Without
   # current remote state the unpushed check cannot be trusted, so stop.
   git fetch --quiet --prune origin || die "could not fetch origin, so pushed commits cannot be confirmed; nothing removed"
-  dirty="$(git -C "$wt" status --porcelain)"
+  # --untracked-files: a status.showUntrackedFiles=no setting must not hide work from cleanup.
+  dirty="$(git -C "$wt" status --porcelain --untracked-files=normal)"
   ahead="$(unpushed_count "$wt")"
   read -r pr_s pr_n pr_head <<< "$(pr_info "$branch")"
   pr_head="${pr_head:-}"
@@ -331,7 +338,10 @@ finish)
   rescue_branch=""; dump_file=""
   if [ "$rescue" = 1 ]; then
     make_rdir
-    if [ -n "$dirty" ] || [ "$ahead" != "0" ]; then
+    # Push a rescue branch whenever the commit is not on the default branch: a task branch, even
+    # one already pushed, is normally deleted after a squash merge, and restore must still be
+    # able to fetch the HEAD recorded in the manifest.
+    if [ -n "$dirty" ] || ! git merge-base --is-ancestor "$head" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
       rescue_branch="rescue/$(date +%Y%m%d)-$name"
       if [ -n "$dirty" ]; then
         git -C "$wt" add -A
@@ -421,6 +431,7 @@ restore)
     git cat-file -e "${rhead}^{commit}" 2>/dev/null || die "commit $rhead is not available"
     start_at="$rhead"
   fi
+  exclude_task_env
   port_lock
   port="$(pick_port "$name")" || die "no free port"
   mkdir -p "$ROOT/$WORKTREE_DIR"
