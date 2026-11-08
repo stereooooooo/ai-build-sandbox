@@ -9,7 +9,8 @@
 # Usage: bash tests/run-tests.sh
 set -uo pipefail
 
-KIT="$(cd "$(dirname "$0")/.." && pwd)"
+# The kit root is the repository holding this file, so the suite also runs from tests/ai-build-kit/.
+KIT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 STUB="$WORK/bin"; FIX="$WORK/fix"
@@ -198,9 +199,12 @@ H=$(pr_commit 'mkdir -p .github/workflows && echo "on: push" > .github/workflows
 r=$(guard "$H"); check "a pull request adding any workflow needs sign-off" failure "$r"
 
 # ---- tier2-review-check (experimental) ------------------------------------------------
-echo "tier2-review-check (experimental)"
-HEADSHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+HEADSHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # also used by the pr-review-status tests
 OLDSHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+echo "tier2-review-check (experimental)"
+if [ ! -f "$KIT/optional/scripts/tier2-review-check.sh" ]; then
+  printf '  skip  optional tier2-review-check is not installed here\n'
+else
 rev() { printf '{"id":%s,"user":{"login":"%s"},"state":"%s","commit_id":"%s","submitted_at":"%s","body":"%s","html_url":"https://x/r%s"}' "$RANDOM" "$1" "$2" "$3" "$4" "${5:-}" "$RANDOM"; }
 prinfo() { # labels-json cross
   printf '{"headRefOid":"%s","isCrossRepository":%s,"labels":%s}\n' "$HEADSHA" "${2:-false}" "$1" > "$FIX/prinfo.json"
@@ -228,6 +232,7 @@ echo "[]" > "$FIX/reviews.json"
 r=$(t2 $C); check "no reviews fails" FAIL "$r"
 echo "[$(rev $C COMMENTED $HEADSHA 2026-01-05T00:00:00Z),$(rev $C COMMENTED $OLDSHA 2026-01-01T00:00:00Z)]" > "$FIX/reviews.json"
 r=$(t2 $C); check "reviews out of order are sorted by time" PASS "$r"
+fi
 
 # ---- pr-review-status -------------------------------------------------------------------
 echo "pr-review-status"
@@ -510,6 +515,33 @@ task finish mu --rescue >/dev/null 2>&1; task finish nu --rescue >/dev/null 2>&1
 r=PASS; wait "$p1" || r=FAIL; wait "$p2" || r=FAIL
 x=ok; [ "$(grep '^PORT=' "$T/rho/.ai-task.env" 2>/dev/null)" != "$(grep '^PORT=' "$T/sigma/.ai-task.env" 2>/dev/null)" ] || x="both tasks got the same port"
 check "two starts at the same moment both succeed, with different ports" PASS "$r" "$x"
+task finish rho --rescue >/dev/null 2>&1; task finish sigma --rescue >/dev/null 2>&1
+
+task start pi --no-claude --no-install >/dev/null
+git -C "$T/pi" config status.showUntrackedFiles no
+echo "draft" > "$T/pi/untracked-draft.txt"; mkdir -p "$T/pi/scratch"; echo "local" > "$T/pi/scratch/data.txt"
+r=$(task finish pi); x=$(there "$T/pi/untracked-draft.txt"); [ "$x" = ok ] && x=$(has "untracked-draft.txt" "$WORK/out.txt"); [ "$x" = ok ] && x=$(has "scratch/" "$WORK/out.txt")
+check "status.showUntrackedFiles=no: finish still sees untracked and ignored work" FAIL "$r" "$x"
+r=$(task finish pi --rescue); rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-pi | head -n 1)
+x=$(gone "$T/pi"); [ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*-pi' | grep -q . || x="untracked file not pushed"; }
+[ "$x" = ok ] && { [ -f "$rd/files/scratch/data.txt" ] || x="ignored file not rescued"; }
+check "status.showUntrackedFiles=no: finish --rescue saves untracked and ignored work" PASS "$r" "$x"
+
+task start tau --no-claude --no-install >/dev/null
+( cd "$T/tau" && echo s > s.txt && git add s.txt && git commit -qm s && git push -q origin HEAD:task/tau 2>/dev/null )
+th=$(git -C "$T/tau" rev-parse HEAD)
+prlist tau "[{\"state\":\"MERGED\",\"number\":11,\"headRefOid\":\"$th\"}]"
+mkdir -p "$T/tau/scratch"; echo "keep me" > "$T/tau/scratch/notes.txt"
+git push -q origin --delete task/tau 2>/dev/null; git fetch -q --prune origin
+r=$(task finish tau --rescue); rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-tau | head -n 1)
+x=$(gone "$T/tau"); [ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*-tau' | grep -q "^$th" || x="squash-merged commit not pushed to a rescue branch"; }
+[ "$x" = ok ] && x=$(has "HEAD=$th" "$rd/MANIFEST.txt")
+check "squash-merged task with its branch deleted: rescue keeps a fetchable commit" PASS "$r" "$x"
+G="$WORK/fresh-clone"; git clone -q "$O" "$G" 2>/dev/null; mkdir -p "$G/.ai-build" "$G/scripts"; cp "$P/.ai-build/project.env" "$G/.ai-build/"; cp "$P/scripts/ai-task.sh" "$G/scripts/"
+r=$( ( cd "$G" && bash scripts/ai-task.sh restore "$rd" tau-back ) > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL )
+x=ok; [ "$(git -C "$G/.claude/worktrees/tau-back" rev-parse HEAD 2>/dev/null)" = "$th" ] || x="restore in a fresh clone did not reach $th"
+[ "$x" = ok ] && { [ -f "$G/.claude/worktrees/tau-back/scratch/notes.txt" ] || x="rescued file missing"; }
+check "that rescue restores in a fresh clone" PASS "$r" "$x"
 cd "$WORK" || exit 1
 
 echo

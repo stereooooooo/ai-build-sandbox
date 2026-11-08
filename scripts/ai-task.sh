@@ -114,7 +114,7 @@ unpushed_count() { git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null
 
 ignored_entries() { # worktree -> ignored paths (folders end in "/"), one per line
   local rec
-  git -C "$1" status --porcelain=v1 --ignored -z | while IFS= read -r -d '' rec; do
+  git -C "$1" status --porcelain=v1 --ignored --untracked-files=normal -z | while IFS= read -r -d '' rec; do
     case "$rec" in '!! '*) printf '%s\n' "${rec#!! }" ;; esac
   done
 }
@@ -253,7 +253,7 @@ list)
     case "$wt" in "$ROOT/$WORKTREE_DIR/"*) ;; *) continue ;; esac
     name="$(basename "$wt")"
     branch="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
-    dirty="$( (git -C "$wt" status --porcelain 2>/dev/null || true) | wc -l | tr -d ' ')"
+    dirty="$( (git -C "$wt" status --porcelain --untracked-files=normal 2>/dev/null || true) | wc -l | tr -d ' ')"
     ahead="$(unpushed_count "$wt")"
     port="$( (grep '^PORT=' "$wt/.ai-task.env" 2>/dev/null || true) | cut -d= -f2)"
     printf '%-24s %-28s %-6s %-9s %-12s %s\n' "$name" "${branch:-detached}" "$dirty" "$ahead" "$(pr_label "$branch")" "${port:--}"
@@ -276,12 +276,14 @@ finish)
   # Prune, so a branch deleted on GitHub no longer counts as a copy of these commits. Without
   # current remote state the unpushed check cannot be trusted, so stop.
   git fetch --quiet --prune origin || die "could not fetch origin, so pushed commits cannot be confirmed; nothing removed"
-  dirty="$(git -C "$wt" status --porcelain)"
+  # --untracked-files: a status.showUntrackedFiles=no setting must not hide work from cleanup.
+  dirty="$(git -C "$wt" status --porcelain --untracked-files=normal)"
   ahead="$(unpushed_count "$wt")"
   read -r pr_s pr_n pr_head <<< "$(pr_info "$branch")"
   pr_head="${pr_head:-}"
   # A squash-merged branch is usually deleted from origin, so its commits look unpushed. They
   # are safe only when the pull request merged exactly the commit checked out here.
+  unreachable="$ahead"   # commits on no remote branch, even if the exemption below applies
   if [ "$ahead" != "0" ] && [ "$pr_s" = "MERGED" ] && [ "$pr_head" = "$head" ]; then ahead=0; fi
 
   entries="$(ignored_entries "$wt")" || die "could not list ignored files; nothing removed"
@@ -331,7 +333,9 @@ finish)
   rescue_branch=""; dump_file=""
   if [ "$rescue" = 1 ]; then
     make_rdir
-    if [ -n "$dirty" ] || [ "$ahead" != "0" ]; then
+    # Push whenever the commit is on no remote branch (also for a squash-merged task whose branch
+    # was deleted), so restore can always fetch the HEAD recorded in the manifest.
+    if [ -n "$dirty" ] || [ "$unreachable" != "0" ]; then
       rescue_branch="rescue/$(date +%Y%m%d)-$name"
       if [ -n "$dirty" ]; then
         git -C "$wt" add -A
