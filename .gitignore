@@ -1,0 +1,4 @@
+node_modules/
+.claude/worktrees/
+.ai-task.env
+.DS_Store

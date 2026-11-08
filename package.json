@@ -1,0 +1,11 @@
+{
+  "name": "ai-build-sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway repository for live tests of the AI build kit. No real data.",
+  "scripts": {
+    "test": "node --test",
+    "dev": "node src/server.js"
+  }
+}
