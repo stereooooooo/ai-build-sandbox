@@ -42,7 +42,7 @@ watches or continues after a session stops.
 | `.ai-build/project.env` | Per-project settings for the launcher: default branch, install command, port range, local files to copy, disposable ignored paths, per-task database setup and its verification. |
 | `scripts/ai-task.sh` | Task launcher: `start` a fresh worktree and Claude session, `list` tasks, `finish` a task without losing work, `restore` a rescued task. |
 | `optional/…/tier2-review-check.*` | **Experimental.** Requires exactly one tier label; for `tier-2`, fails unless the newest non-dismissed Codex review is on the head commit. Do not make it required until the live tests below pass. |
-| `tests/run-tests.sh` | Local tests for all scripts (78 scenarios in this reviewed copy). |
+| `tests/run-tests.sh` | Local tests for all scripts (85 scenarios: the reviewed copy's 78 plus 7 added in the sandbox). |
 
 ## Task launcher
 
@@ -68,7 +68,7 @@ Project-specific setup and verification commands must also avoid logging credent
 starts `claude --continue` in the task folder. Use it when reopening a session. After restoring
 a database task, regenerate its connection settings first; resume refuses an unverified database.
 
-**finish** removes a task only if nothing would be lost. It stops, changing nothing, when there
+**finish** removes a task only if nothing would be lost. It first fetches with pruning, so a branch deleted on GitHub no longer counts as a copy, and stops if GitHub cannot be reached. It stops, changing nothing, when there
 are uncommitted changes, commits not on any remote branch, gitignored files other than
 `DISPOSABLE` paths and unchanged copies of `COPY_FILES`, or a pull request state it cannot
 confirm or that is open. Unknown ignored files and local data (such as `.wrangler/state`) are
@@ -81,10 +81,10 @@ and compared with the originals; a `MANIFEST.txt` records what was saved and how
 Any failure leaves the worktree untouched. **Task databases are kept** unless you pass
 `--drop-db`; then a dump is written and checked first if `DB_DUMP_CMD` is set.
 
-**restore** recreates a task from a rescue folder: branch, local files (verified), a new port.
+**restore** recreates a task from a rescue folder at the exact commit its manifest records: branch, local files (verified), a new port. Ports are chosen under a lock, so simultaneous starts or restores never share one.
 
 Written for bash 3.2 (the macOS default). Codex ran the original v3.4 suite (72 passed) and
-this reviewed copy (78 passed) under macOS bash 3.2.57. The tests mock GitHub, Claude and
+this reviewed copy (78 passed) under macOS bash 3.2.57; the sandbox fixes bring it to 85. The tests mock GitHub, Claude and
 database commands; the live rollout tests below remain necessary.
 
 ## How owner sign-off works
