@@ -414,6 +414,20 @@ mkdir -p "$T/zeta/.wrangler/state/d1"; echo "local rows" > "$T/zeta/.wrangler/st
 r=$(task finish zeta); check "local database state (.wrangler/state) is never disposable by default" FAIL "$r" "$(there "$T/zeta/.wrangler/state/d1/db.sqlite")"
 rm -rf "$T/zeta/.wrangler"
 
+# A plain folder under the worktree directory (not a registered worktree) resolves to the
+# main checkout in git; finish --rescue must not commit or push the main checkout's work.
+mkdir -p "$T/loose"; echo "page copy" > "$T/loose/page.html"; echo "unsaved" > "$P/main-wip.txt"
+main_head="$(git -C "$P" rev-parse HEAD)"
+r=$(task finish loose --rescue)
+x=ok
+[ "$(git -C "$P" rev-parse HEAD)" = "$main_head" ] || x="main checkout HEAD moved"
+[ -f "$P/main-wip.txt" ] && git -C "$P" status --porcelain --untracked-files=normal | grep -q "main-wip.txt" || x="main checkout work was committed or removed"
+git -C "$O" for-each-ref --format='%(refname)' 'refs/heads/rescue/*' | grep -q -- "-loose$" && x="rescue branch pushed for a non-worktree folder"
+[ "$x" = ok ] && x=$(there "$T/loose/page.html")
+check "finish refuses a folder that is not a registered task worktree" FAIL "$r" "$x"
+rm -rf "$T/loose" "$P/main-wip.txt"
+
+
 r=$(STUB_PR_FAIL=1 task finish zeta); x=$(there "$T/zeta"); [ "$x" = ok ] && x=$(has "could not be confirmed" "$WORK/out.txt")
 check "pull request lookup fails (HTTP 503): finish refuses" FAIL "$r" "$x"
 r=$( ( cd "$P" && PATH="/usr/bin:/bin" bash scripts/ai-task.sh finish zeta ) > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL )
@@ -481,6 +495,33 @@ r=$( ( cd "$P" && git remote set-url origin "$WORK/no-such-remote.git" && bash s
 x=$(there "$T/iota"); [ "$x" = ok ] && x=$(has "could not fetch origin" "$WORK/out.txt")
 check "remote unreachable: finish refuses instead of trusting cached remote state" FAIL "$r" "$x"
 task finish iota --rescue >/dev/null 2>&1
+
+# Bot-draft revision: the task switches its clean worktree onto an existing draft branch and
+# pushes there. After the draft merges, finish must also remove the unused task/<name> branch
+# so the name can be started again.
+task start draftrev --no-claude --no-install >/dev/null
+( cd "$T/draftrev" && git push -q origin HEAD:refs/heads/blog-draft/draftrev 2>/dev/null \
+  && git fetch -q origin blog-draft/draftrev && git switch -q --track origin/blog-draft/draftrev \
+  && echo "draft edit" > draft.txt && git add draft.txt && git commit -q -m "revise draft" \
+  && git push -q origin HEAD:blog-draft/draftrev 2>/dev/null )
+echo "[{\"state\":\"MERGED\",\"number\":21,\"headRefOid\":\"$(git -C "$T/draftrev" rev-parse HEAD)\"}]" > "$FIX/prlist-blog-draft_draftrev.json"
+r=$(task finish draftrev)
+x=$(gone "$T/draftrev")
+[ "$x" = ok ] && git -C "$P" show-ref --verify --quiet refs/heads/task/draftrev && x="task/draftrev branch left behind"
+[ "$x" = ok ] && { r2=$(task start draftrev --no-claude --no-install); [ "$r2" = PASS ] || x="could not start draftrev again: $(tail -1 "$WORK/out.txt")"; }
+check "finish after bot-draft work removes the original task branch" PASS "$r" "$x"
+task finish draftrev >/dev/null 2>&1
+task start keepwork --no-claude --no-install >/dev/null
+( cd "$T/keepwork" && echo "local only" > local.txt && git add local.txt && git commit -q -m "unpushed" \
+  && git fetch -q origin blog-draft/draftrev && git switch -q --track origin/blog-draft/draftrev 2>/dev/null \
+  || git switch -q -c blog-draft/draftrev-2 origin/blog-draft/draftrev )
+b=$(git -C "$T/keepwork" branch --show-current)
+echo "[{\"state\":\"MERGED\",\"number\":22,\"headRefOid\":\"$(git -C "$T/keepwork" rev-parse HEAD)\"}]" > "$FIX/prlist-$(printf '%s' "$b" | tr '/' '_').json"
+r=$(task finish keepwork)
+x=ok; git -C "$P" show-ref --verify --quiet refs/heads/task/keepwork || x="task/keepwork with unpushed commits was deleted"
+[ "$x" = ok ] && x=$(has "kept branch task/keepwork" "$WORK/out.txt")
+check "finish keeps an original task branch that has unpushed commits" PASS "$r" "$x"
+git -C "$P" branch -D task/keepwork >/dev/null 2>&1
 
 task start kappa --no-claude --no-install >/dev/null
 echo first > "$T/kappa/version.txt"

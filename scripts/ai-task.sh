@@ -48,6 +48,16 @@ cmd="${1:-}"; shift || true
 
 valid_name() { printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]{0,39}$'; }
 wt_path() { printf '%s/%s/%s' "$ROOT" "$WORKTREE_DIR" "$1"; }
+registered_worktree() { # dir : true only for a worktree git lists whose top level is dir itself
+  local want top p
+  want="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ "$(cd "$top" 2>/dev/null && pwd -P)" = "$want" ] || return 1
+  while IFS= read -r p; do
+    [ "$(cd "$p" 2>/dev/null && pwd -P)" = "$want" ] && return 0
+  done <<< "$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print}')"
+  return 1
+}
 with_task_env() { # dir command... : runs a command with .ai-task.env loaded
   local d="$1"; shift
   ( cd "$d" && set -a && . ./.ai-task.env && set +a && bash -c "$*" )
@@ -275,6 +285,10 @@ finish)
   valid_name "$name" || die "invalid task name"
   wt="$(wt_path "$name")"
   [ -d "$wt" ] || die "no task worktree at $wt"
+  # A plain folder here is not a worktree: git would resolve it to the main checkout, and a
+  # rescue would commit and push that checkout's work. Require a registered worktree whose own
+  # top level is this folder.
+  registered_worktree "$wt" || die "$wt is not a registered task worktree; nothing changed"
   branch="$(git -C "$wt" branch --show-current)"
   db="$( (grep '^AI_TASK_DB=' "$wt/.ai-task.env" 2>/dev/null || true) | cut -d= -f2)"
   head="$(git -C "$wt" rev-parse HEAD)"
@@ -397,6 +411,16 @@ finish)
 
   git worktree remove --force "$wt"
   git branch -D "$branch" >/dev/null 2>&1 || true
+  # A task that revised an existing branch (such as a bot's draft) switched away from the
+  # branch start created. Remove that one too, but only if its commit is on a remote branch.
+  orig="$BRANCH_PREFIX$name"
+  if [ "$orig" != "$branch" ] && git show-ref --verify --quiet "refs/heads/$orig"; then
+    if [ -n "$(git branch -r --contains "refs/heads/$orig" 2>/dev/null)" ]; then
+      git branch -D "$orig" >/dev/null 2>&1 || echo "warning: could not delete branch $orig" >&2
+    else
+      echo "warning: kept branch $orig: it has commits on no remote branch" >&2
+    fi
+  fi
   if [ "$drop_db" = 1 ] && [ -n "$db" ]; then
     if AI_TASK_DB="$db" bash -c "$DB_DROP_CMD"; then echo "Dropped database $db"
     else echo "warning: could not drop $db; it still exists" >&2; fi
