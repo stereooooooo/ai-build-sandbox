@@ -91,7 +91,10 @@ database commands; the live rollout tests below remain necessary.
 
 1. Review the pull request at a specific commit.
 2. Comment on the pull request: `/signoff <commit>` (7 to 40 characters of the commit's ID).
-   `/signoff revoke` withdraws it. The latest command from an owner counts.
+   `/signoff revoke` withdraws it. The latest command from an owner counts. The command is the
+   comment's first non-blank line; spaces around it are ignored. An owner's comment that starts
+   with `/signoff` but cannot be read (a typo, extra words) counts as a revoke, so it never leaves
+   an earlier approval standing.
 3. The `owner-signoff` status is green while the sign-off paths in the current head are
    identical to those in the signed-off commit. Any later change to them, in any number of
    pushes, needs a new sign-off. Unrelated changes keep it.

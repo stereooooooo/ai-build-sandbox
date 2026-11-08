@@ -113,7 +113,7 @@ echo "$changed"
 
 # Read every comment. Any error, even after some output, means nothing is approved.
 if ! comments="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-       --jq '.[] | [.user.login, .updated_at, ((.body // "") | gsub("\r"; "") | split("\n")[0])] | @tsv')"; then
+       --jq '.[] | [.user.login, .updated_at, ((.body // "") | gsub("\r"; "") | split("\n") | map(select(test("\\S"))) | (.[0] // ""))] | @tsv')"; then
   fail_closed "Could not read all pull request comments"
 fi
 
@@ -122,9 +122,15 @@ latest=""
 while IFS=$'\t' read -r who when first; do
   [ -n "$who" ] || continue
   case ",${OWNERS}," in *",${who},"*) ;; *) continue ;; esac
-  cmd="$(printf '%s' "$first" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+  # The command is the first non-blank line, ignoring spaces around it.
+  cmd="$(printf '%s' "$first" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   if printf '%s' "$cmd" | grep -Eq '^/signoff[[:space:]]+([0-9a-fA-F]{7,40}|revoke)$'; then
     latest="$when $(printf '%s' "$cmd" | awk '{print $2}')"
+  elif printf '%s' "$cmd" | grep -Eiq '^/sign-?off([[:space:]]|$)'; then
+    # A sign-off command this guard cannot read (typo, wrong case, extra words) must never
+    # leave an earlier approval standing: treat it as a revoke, so the owner sees red.
+    echo "Unrecognized sign-off command from $who treated as revoke: $cmd"
+    latest="$when revoke"
   fi
 done < <(printf '%s\n' "$comments" | sort -t $'\t' -k2,2)
 
