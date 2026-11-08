@@ -116,6 +116,8 @@ pick_port() { # name
 # "none" (GitHub confirmed there is no pull request) or "unknown" (could not ask GitHub).
 pr_info() {
   local out
+  # No branch (detached HEAD): "gh pr list --head ''" would match every pull request.
+  [ -n "$1" ] || { echo unknown; return; }
   command -v gh >/dev/null 2>&1 || { echo unknown; return; }
   if ! out="$(gh pr list --head "$1" --state all --limit 50 --json state,number,headRefOid \
         --jq 'if length == 0 then "none" else ((map(select(.state == "OPEN")) + .)[0] | "\(.state) \(.number) \(.headRefOid)") end')"; then
@@ -272,7 +274,7 @@ list)
     dirty="$( (git -C "$wt" status --porcelain --untracked-files=normal 2>/dev/null || true) | wc -l | tr -d ' ')"
     ahead="$(unpushed_count "$wt")"
     port="$( (grep '^PORT=' "$wt/.ai-task.env" 2>/dev/null || true) | cut -d= -f2)"
-    printf '%-24s %-28s %-6s %-9s %-12s %s\n' "$name" "${branch:-detached}" "$dirty" "$ahead" "$(pr_label "$branch")" "${port:--}"
+    printf '%-24s %-28s %-6s %-9s %-12s %s\n' "$name" "${branch:-detached}" "$dirty" "$ahead" "$( [ -n "$branch" ] && pr_label "$branch" || echo - )" "${port:--}"
   done
   ;;
 
@@ -327,7 +329,8 @@ finish)
   [ -n "$keep" ] && reasons="${reasons}- gitignored files that are not listed as disposable:"$'\n'"$(printf '%s' "$keep" | sed 's/^/    /')"$'\n'
   if [ "$rescue" != 1 ]; then
     case "$pr_s" in
-      unknown) reasons="${reasons}- pull request state could not be confirmed (gh missing, signed out, or GitHub unavailable)"$'\n' ;;
+      unknown) if [ -z "$branch" ]; then reasons="${reasons}- no branch is checked out (detached), so its pull request cannot be identified"$'\n'
+               else reasons="${reasons}- pull request state could not be confirmed (gh missing, signed out, or GitHub unavailable)"$'\n'; fi ;;
       OPEN) [ "$allow_open" = 1 ] || reasons="${reasons}- pull request #$pr_n is open (pass --allow-open to remove only the local copy)"$'\n' ;;
     esac
     if [ -n "$reasons" ]; then
@@ -357,6 +360,10 @@ finish)
     # able to fetch the HEAD recorded in the manifest.
     if [ -n "$dirty" ] || ! git merge-base --is-ancestor "$head" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
       rescue_branch="rescue/$(date +%Y%m%d)-$name"
+      # A second rescue of the same task on the same day: keep the first, add the time.
+      if git ls-remote --exit-code --heads origin "$rescue_branch" >/dev/null 2>&1; then
+        rescue_branch="rescue/$(date +%Y%m%d-%H%M%S)-$name"
+      fi
       if [ -n "$dirty" ]; then
         git -C "$wt" add -A
         git -C "$wt" commit --quiet --no-verify -m "rescue: uncommitted work from task $name"

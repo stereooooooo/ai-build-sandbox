@@ -142,6 +142,16 @@ comments "partner|2026-01-01T10:00:00Z|/signoff ${C:0:10}  \r\nLooks right."
 r=$(guard "$C"); check "second listed owner, trailing spaces and extra lines accepted" success "$r"
 comments "ray|2026-01-01T10:00:00Z|I will /signoff $C later"
 r=$(guard "$C"); check "a mention that is not a command does not count" failure "$r"
+comments "ray|2026-01-01T10:00:00Z|/signoff $C" "ray|2026-01-01T12:00:00Z|  /signoff revoke"
+r=$(guard "$C"); check "revoke typed with a leading space still revokes" failure "$r"
+comments "ray|2026-01-01T10:00:00Z|\n   /signoff ${C:0:7}  \nchecked the rules"
+r=$(guard "$C"); check "sign-off after a blank first line and leading spaces is accepted" success "$r"
+comments "ray|2026-01-01T10:00:00Z|/signoff $C" "ray|2026-01-01T12:00:00Z|/signoff ${C:0:7}."
+r=$(guard "$C"); check "an unreadable sign-off command after an approval counts as revoke" failure "$r"
+comments "ray|2026-01-01T10:00:00Z|/signoff $C" "ray|2026-01-01T12:00:00Z|/Signoff Revoke"
+r=$(guard "$C"); check "a revoke in different capitals still revokes" failure "$r"
+comments "agent-bot|2026-01-01T12:00:00Z|/signoff revoke" "ray|2026-01-01T10:00:00Z|/signoff $C"
+r=$(guard "$C"); check "a non-owner's unreadable or revoke command changes nothing" success "$r"
 comments "ray|2026-01-01T10:00:00Z|/signoff $MAIN"
 r=$(guard "$C"); check "sign-off on a commit without the change fails" failure "$r"
 comments "ray|2026-01-01T10:00:00Z|/signoff deadbeef1"
@@ -539,6 +549,32 @@ rd2="$WORK/rescue-nodb"; cp -Rp "$rd1" "$rd2"; sed -i.bak 's/^DB=.*/DB=/' "$rd2/
 r=$(task restore "$rd2" kappa-nodb); x=$(there "$T/kappa-nodb")
 check "restore of a task without a database exits successfully" PASS "$r" "$x"
 task finish kappa-nodb --rescue >/dev/null 2>&1
+
+# A task finished with --rescue, started again from scratch and rescued again the same day:
+# the second rescue must not be refused because the first rescue branch already exists.
+task start nu --no-claude --no-install >/dev/null
+echo one > "$T/nu/note.txt"
+task finish nu --rescue >/dev/null 2>&1
+task start nu --no-claude --no-install >/dev/null
+echo two > "$T/nu/note.txt"
+r=$(task finish nu --rescue)
+x=$(gone "$T/nu")
+[ "$x" = ok ] && [ "$(git ls-remote "$O" 'refs/heads/rescue/*nu' | wc -l | tr -d ' ')" -ge 2 ] || x="${x/ok/second same-day rescue did not get its own branch}"
+check "a second same-day rescue of a restarted task is saved on its own branch" PASS "$r" "$x"
+
+# A detached task worktree has no branch: list must not show some other pull request, and
+# finish must say why it cannot identify the pull request.
+task start xi --no-claude --no-install >/dev/null
+git -C "$T/xi" switch -q --detach
+echo '[{"state":"MERGED","number":77,"headRefOid":"0000000"}]' > "$FIX/prlist-.json"
+( cd "$P" && bash scripts/ai-task.sh list ) > "$WORK/out.txt" 2>&1
+x=ok; grep -E '^xi ' "$WORK/out.txt" | grep -q '#77' && x="list showed an unrelated pull request for a detached task"
+check "list shows no pull request for a detached task" ok "$x"
+r=$(task finish xi)
+x=$(there "$T/xi"); [ "$x" = ok ] && x=$(has "detached" "$WORK/out.txt")
+check "finish of a detached task refuses and says it is detached" FAIL "$r" "$x"
+rm -f "$FIX/prlist-.json"
+task finish xi --rescue >/dev/null 2>&1
 
 LOCK="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
 { bash -c 'exec 9>>"$1"; perl -e "use Fcntl qw(:flock); open(my \$f, \">&=\", 9); flock(\$f, LOCK_EX)"; kill -9 $$' _ "$LOCK"; } 2>/dev/null
