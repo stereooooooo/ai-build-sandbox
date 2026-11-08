@@ -66,27 +66,22 @@ port_taken_by_task() {
   done
   return 1
 }
-# Port reservation: picking a port and writing it to .ai-task.env happen under one lock, so two
-# tasks started at the same moment cannot pick the same port. A lock left by a process that no
-# longer runs is taken over.
+# Port reservation: picking a port and writing it to .ai-task.env happen under one exclusive
+# lock, so two tasks started at the same moment cannot pick the same port. The lock is a kernel
+# file lock (flock via perl, which macOS ships), held on file descriptor 9: the system releases
+# it when this process exits for any reason, so a crashed launcher never leaves a stale lock.
+# The lock file itself stays in place and is never removed.
 PORT_LOCK="$(git rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
 port_lock() {
-  local tries=0 holder
-  until mkdir "$PORT_LOCK" 2>/dev/null; do
-    holder="$(cat "$PORT_LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-      rm -f "$PORT_LOCK/pid"; rmdir "$PORT_LOCK" 2>/dev/null || true; continue
-    fi
-    tries=$((tries + 1)); [ "$tries" -le 300 ] || die "another ai-task start or restore is still choosing a port ($PORT_LOCK)"
+  local tries=0
+  command -v perl >/dev/null 2>&1 || die "perl is needed to lock port selection"
+  exec 9>>"$PORT_LOCK" || die "cannot open $PORT_LOCK"
+  until perl -e 'use Fcntl qw(:flock); open(my $f, ">&=", 9) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1'; do
+    tries=$((tries + 1)); [ "$tries" -le 300 ] || die "another ai-task start or restore is still choosing a port"
     sleep 0.1
   done
-  echo "$$" > "$PORT_LOCK/pid"
-  trap port_unlock EXIT
 }
-port_unlock() {
-  [ "$(cat "$PORT_LOCK/pid" 2>/dev/null || true)" = "$$" ] || return 0
-  rm -f "$PORT_LOCK/pid"; rmdir "$PORT_LOCK" 2>/dev/null || true
-}
+port_unlock() { exec 9>&-; }
 pick_port() { # name
   local h i p
   h=$(printf '%s' "$1" | cksum | awk '{print $1}')

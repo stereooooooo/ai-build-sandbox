@@ -490,13 +490,15 @@ check "restore of a task without a database exits successfully" PASS "$r" "$x"
 task finish kappa-nodb --rescue >/dev/null 2>&1
 
 LOCK="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
-mkdir "$LOCK"; echo 999999 > "$LOCK/pid"                       # left by a process that is gone
-r=$(task start mu --no-claude --no-install); x=$(gone "$LOCK")
-check "port lock left by a finished process is taken over and released" PASS "$r" "$x"
-sh -c 'mkdir "$1" && echo $$ > "$1/pid" && sleep 1 && rm -f "$1/pid" && rmdir "$1"' _ "$LOCK" & holder=$!
-sleep 0.2
-r=$(task start nu --no-claude --no-install); wait "$holder"
-x=$(there "$T/nu/.ai-task.env"); [ "$x" = ok ] && x=$(gone "$LOCK")
+{ bash -c 'exec 9>>"$1"; perl -e "use Fcntl qw(:flock); open(my \$f, \">&=\", 9); flock(\$f, LOCK_EX)"; kill -9 $$' _ "$LOCK"; } 2>/dev/null
+r=$(task start mu --no-claude --no-install)
+check "port lock held by a launcher that was killed is free again" PASS "$r" "$(there "$T/mu/.ai-task.env")"
+perl -e 'use Fcntl qw(:flock); open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; sleep 1' "$LOCK" & holder=$!
+sleep 0.3
+r=$(task start nu --no-claude --no-install)
+x=ok; kill -0 "$holder" 2>/dev/null && x="start finished while another process held the lock"
+wait "$holder"
+[ "$x" = ok ] && x=$(there "$T/nu/.ai-task.env")
 [ "$x" = ok ] && [ "$(grep '^PORT=' "$T/nu/.ai-task.env")" != "$(grep '^PORT=' "$T/mu/.ai-task.env")" ] || x="${x/ok/same port as mu}"
 check "start waits for another start holding the port lock, then picks a different port" PASS "$r" "$x"
 task finish mu --rescue >/dev/null 2>&1; task finish nu --rescue >/dev/null 2>&1
