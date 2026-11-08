@@ -82,6 +82,14 @@ port_lock() {
   done
 }
 port_unlock() { exec 9>&-; }
+# Keep each task's .ai-task.env (port, database and connection settings) out of git, so a
+# rescue commit can never include it. Called by start and restore before the file is written.
+exclude_task_env() {
+  local exclude
+  exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$exclude")"
+  grep -qx '.ai-task.env' "$exclude" 2>/dev/null || echo '.ai-task.env' >> "$exclude"
+}
 pick_port() { # name
   local h i p
   h=$(printf '%s' "$1" | cksum | awk '{print $1}')
@@ -156,9 +164,7 @@ start)
   port="$(pick_port "$name")" || die "no free port in $PORT_BASE..$((PORT_BASE + PORT_RANGE - 1))"
 
   git check-ignore -q "$WORKTREE_DIR/probe" || echo "warning: $WORKTREE_DIR/ is not gitignored; add it to .gitignore" >&2
-  exclude="$(git rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-  mkdir -p "$(dirname "$exclude")"
-  grep -qx '.ai-task.env' "$exclude" 2>/dev/null || echo '.ai-task.env' >> "$exclude"
+  exclude_task_env
 
   db=""; db_created=0
   [ -n "$DB_PREFIX" ] && db="${DB_PREFIX}_$(printf '%s' "$name" | tr '-' '_')"
@@ -283,7 +289,6 @@ finish)
   pr_head="${pr_head:-}"
   # A squash-merged branch is usually deleted from origin, so its commits look unpushed. They
   # are safe only when the pull request merged exactly the commit checked out here.
-  unreachable="$ahead"   # commits on no remote branch, even if the exemption below applies
   if [ "$ahead" != "0" ] && [ "$pr_s" = "MERGED" ] && [ "$pr_head" = "$head" ]; then ahead=0; fi
 
   entries="$(ignored_entries "$wt")" || die "could not list ignored files; nothing removed"
@@ -333,9 +338,10 @@ finish)
   rescue_branch=""; dump_file=""
   if [ "$rescue" = 1 ]; then
     make_rdir
-    # Push whenever the commit is on no remote branch (also for a squash-merged task whose branch
-    # was deleted), so restore can always fetch the HEAD recorded in the manifest.
-    if [ -n "$dirty" ] || [ "$unreachable" != "0" ]; then
+    # Push a rescue branch whenever the commit is not on the default branch: a task branch, even
+    # one already pushed, is normally deleted after a squash merge, and restore must still be
+    # able to fetch the HEAD recorded in the manifest.
+    if [ -n "$dirty" ] || ! git merge-base --is-ancestor "$head" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
       rescue_branch="rescue/$(date +%Y%m%d)-$name"
       if [ -n "$dirty" ]; then
         git -C "$wt" add -A
@@ -425,6 +431,7 @@ restore)
     git cat-file -e "${rhead}^{commit}" 2>/dev/null || die "commit $rhead is not available"
     start_at="$rhead"
   fi
+  exclude_task_env
   port_lock
   port="$(pick_port "$name")" || die "no free port"
   mkdir -p "$ROOT/$WORKTREE_DIR"

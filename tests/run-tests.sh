@@ -542,11 +542,26 @@ r=$(task finish tau --rescue); rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-tau | head -
 x=$(gone "$T/tau"); [ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*-tau' | grep -q "^$th" || x="squash-merged commit not pushed to a rescue branch"; }
 [ "$x" = ok ] && x=$(has "HEAD=$th" "$rd/MANIFEST.txt")
 check "squash-merged task with its branch deleted: rescue keeps a fetchable commit" PASS "$r" "$x"
-G="$WORK/fresh-clone"; git clone -q "$O" "$G" 2>/dev/null; mkdir -p "$G/.ai-build" "$G/scripts"; cp "$P/.ai-build/project.env" "$G/.ai-build/"; cp "$P/scripts/ai-task.sh" "$G/scripts/"
+G="$WORK/fresh-clone"; git clone -q --no-local "$O" "$G" 2>/dev/null; mkdir -p "$G/.ai-build" "$G/scripts"; cp "$P/.ai-build/project.env" "$G/.ai-build/"; cp "$P/scripts/ai-task.sh" "$G/scripts/"
 r=$( ( cd "$G" && bash scripts/ai-task.sh restore "$rd" tau-back ) > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL )
 x=ok; [ "$(git -C "$G/.claude/worktrees/tau-back" rev-parse HEAD 2>/dev/null)" = "$th" ] || x="restore in a fresh clone did not reach $th"
 [ "$x" = ok ] && { [ -f "$G/.claude/worktrees/tau-back/scratch/notes.txt" ] || x="rescued file missing"; }
 check "that rescue restores in a fresh clone" PASS "$r" "$x"
+x=ok; [ -z "$(git -C "$G/.claude/worktrees/tau-back" status --porcelain --untracked-files=normal)" ] || x="restored task is dirty: $(git -C "$G/.claude/worktrees/tau-back" status --porcelain | tr '\n' ' ')"
+check "restore in a clone that never ran start keeps .ai-task.env out of git" ok "$x"
+
+task start upsilon --no-claude --no-install >/dev/null
+( cd "$T/upsilon" && echo u > u.txt && git add u.txt && git commit -qm u && git push -q origin HEAD:task/upsilon 2>/dev/null ); git fetch -q origin
+uh=$(git -C "$T/upsilon" rev-parse HEAD)
+mkdir -p "$T/upsilon/scratch"; echo "local d1 stand-in" > "$T/upsilon/scratch/state.txt"
+r=$(task finish upsilon --rescue); rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-upsilon | head -n 1)
+x=$(gone "$T/upsilon"); [ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*-upsilon' | grep -q "^$uh" || x="no rescue branch for a commit that is only on its task branch"; }
+check "already-pushed task commit gets a rescue branch" PASS "$r" "$x"
+git push -q origin --delete task/upsilon 2>/dev/null   # squash-merged and branch deleted afterwards
+G2="$WORK/fresh-clone-2"; git clone -q --no-local "$O" "$G2" 2>/dev/null; mkdir -p "$G2/.ai-build" "$G2/scripts"; cp "$P/.ai-build/project.env" "$G2/.ai-build/"; cp "$P/scripts/ai-task.sh" "$G2/scripts/"
+r=$( ( cd "$G2" && bash scripts/ai-task.sh restore "$rd" upsilon-back ) > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL )
+x=ok; [ "$(git -C "$G2/.claude/worktrees/upsilon-back" rev-parse HEAD 2>/dev/null)" = "$uh" ] || x="restore could not reach $uh after its task branch was deleted"
+check "that rescue restores in a fresh clone after the task branch is deleted" PASS "$r" "$x"
 cd "$WORK" || exit 1
 
 echo
