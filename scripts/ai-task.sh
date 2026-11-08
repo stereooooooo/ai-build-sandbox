@@ -66,6 +66,27 @@ port_taken_by_task() {
   done
   return 1
 }
+# Port reservation: picking a port and writing it to .ai-task.env happen under one lock, so two
+# tasks started at the same moment cannot pick the same port. A lock left by a process that no
+# longer runs is taken over.
+PORT_LOCK="$(git rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
+port_lock() {
+  local tries=0 holder
+  until mkdir "$PORT_LOCK" 2>/dev/null; do
+    holder="$(cat "$PORT_LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      rm -f "$PORT_LOCK/pid"; rmdir "$PORT_LOCK" 2>/dev/null || true; continue
+    fi
+    tries=$((tries + 1)); [ "$tries" -le 300 ] || die "another ai-task start or restore is still choosing a port ($PORT_LOCK)"
+    sleep 0.1
+  done
+  echo "$$" > "$PORT_LOCK/pid"
+  trap port_unlock EXIT
+}
+port_unlock() {
+  [ "$(cat "$PORT_LOCK/pid" 2>/dev/null || true)" = "$$" ] || return 0
+  rm -f "$PORT_LOCK/pid"; rmdir "$PORT_LOCK" 2>/dev/null || true
+}
 pick_port() { # name
   local h i p
   h=$(printf '%s' "$1" | cksum | awk '{print $1}')
@@ -136,6 +157,7 @@ start)
   if [ -n "$DB_PREFIX" ] && [ -z "$DB_VERIFY_CMD" ]; then
     die "DB_PREFIX is set but DB_VERIFY_CMD is empty; the launcher will not run installs or migrations without proof the app uses the task database"
   fi
+  port_lock
   port="$(pick_port "$name")" || die "no free port in $PORT_BASE..$((PORT_BASE + PORT_RANGE - 1))"
 
   git check-ignore -q "$WORKTREE_DIR/probe" || echo "warning: $WORKTREE_DIR/ is not gitignored; add it to .gitignore" >&2
@@ -178,6 +200,7 @@ start)
     echo "AI_TASK_DB=$db"
   } > "$wt/.ai-task.env"
   )
+  port_unlock
 
   if [ -n "$db" ]; then
     if [ -n "$DB_CREATE_CMD" ]; then
@@ -255,7 +278,9 @@ finish)
   db="$( (grep '^AI_TASK_DB=' "$wt/.ai-task.env" 2>/dev/null || true) | cut -d= -f2)"
   head="$(git -C "$wt" rev-parse HEAD)"
 
-  git fetch --quiet origin || echo "warning: fetch failed; unpushed check uses cached remote state" >&2
+  # Prune, so a branch deleted on GitHub no longer counts as a copy of these commits. Without
+  # current remote state the unpushed check cannot be trusted, so stop.
+  git fetch --quiet --prune origin || die "could not fetch origin, so pushed commits cannot be confirmed; nothing removed"
   dirty="$(git -C "$wt" status --porcelain)"
   ahead="$(unpushed_count "$wt")"
   read -r pr_s pr_n pr_head <<< "$(pr_info "$branch")"
@@ -389,11 +414,19 @@ restore)
   if [ -n "$rb" ]; then
     git fetch --quiet origin "$rb" || die "cannot fetch origin/$rb"
     start_at="origin/$rb"
+    # The same rescue branch can move on after a later rescue of the same task on the same day:
+    # restore exactly the commit this rescue recorded.
+    if [ -n "$rhead" ]; then
+      git cat-file -e "${rhead}^{commit}" 2>/dev/null || die "commit $rhead from the manifest is not available"
+      git merge-base --is-ancestor "$rhead" "origin/$rb" || die "commit $rhead is not on origin/$rb"
+      start_at="$rhead"
+    fi
   else
     git cat-file -e "${rhead}^{commit}" 2>/dev/null || git fetch --quiet origin || true
     git cat-file -e "${rhead}^{commit}" 2>/dev/null || die "commit $rhead is not available"
     start_at="$rhead"
   fi
+  port_lock
   port="$(pick_port "$name")" || die "no free port"
   mkdir -p "$ROOT/$WORKTREE_DIR"
   git worktree add --quiet -b "$branch" "$wt" "$start_at"
@@ -412,8 +445,11 @@ restore)
     echo "AI_TASK_DB=$rdb"
   } > "$wt/.ai-task.env"
   )
+  port_unlock
   echo "Restored task $name at $wt on $branch (port $port)"
-  [ -n "$rdb" ] && echo "Database: $rdb (re-run your DB_ENV_CMD and DB_VERIFY_CMD steps; restore $rdir/database.dump if it was dropped)"
+  if [ -n "$rdb" ]; then
+    echo "Database: $rdb (re-run your DB_ENV_CMD and DB_VERIFY_CMD steps; restore $rdir/database.dump if it was dropped)"
+  fi
   ;;
 
 *)

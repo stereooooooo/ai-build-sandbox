@@ -459,6 +459,52 @@ x=$(gone "$T/beta-back"); [ "$x" = ok ] && { [ -s "$rd/database.dump" ] || x="du
 check "finish --drop-db on a restored task: dump written and checked, then its original database dropped" PASS "$r" "$x"
 x=ok; [ "$(ls -d "$TEST_RESCUE_DIR"/app/*-beta-back* | wc -l | tr -d ' ')" -ge 2 ] || x="rescue folder reused"
 check "a second rescue in the same second gets its own folder" ok "$x"
+
+echo "ai-task fixes from the sandbox review"
+for t in gamma theta; do task finish "$t" --rescue >/dev/null 2>&1; done   # free ports: this project has two
+task start iota --no-claude --no-install >/dev/null
+( cd "$T/iota" && echo i > i.txt && git add i.txt && git commit -qm i && git push -q origin HEAD:task/iota 2>/dev/null ); git fetch -q origin
+git --git-dir="$O" update-ref -d refs/heads/task/iota      # deleted on the remote, never merged
+r=$(task finish iota); x=$(there "$T/iota"); [ "$x" = ok ] && x=$(has "commits not on any remote branch" "$WORK/out.txt")
+check "branch deleted on the remote without merging: finish refuses (stale tracking ref pruned)" FAIL "$r" "$x"
+r=$( ( cd "$P" && git remote set-url origin "$WORK/no-such-remote.git" && bash scripts/ai-task.sh finish iota; rc=$?; git remote set-url origin "$O"; exit $rc ) > "$WORK/out.txt" 2>&1 && echo PASS || echo FAIL )
+x=$(there "$T/iota"); [ "$x" = ok ] && x=$(has "could not fetch origin" "$WORK/out.txt")
+check "remote unreachable: finish refuses instead of trusting cached remote state" FAIL "$r" "$x"
+task finish iota --rescue >/dev/null 2>&1
+
+task start kappa --no-claude --no-install >/dev/null
+echo first > "$T/kappa/version.txt"
+task finish kappa --rescue >/dev/null 2>&1
+rd1=$(ls -dt "$TEST_RESCUE_DIR"/app/*-kappa | head -n 1)
+task restore "$rd1" >/dev/null 2>&1
+echo second > "$T/kappa/version.txt"
+task finish kappa --rescue >/dev/null 2>&1
+r=$(task restore "$rd1" kappa-old)
+x=ok; [ "$(cat "$T/kappa-old/version.txt" 2>/dev/null)" = first ] || x="restored $(cat "$T/kappa-old/version.txt" 2>/dev/null || echo nothing), not the rescued 'first'"
+check "restore uses the commit in its manifest after a later same-day rescue moved the branch" PASS "$r" "$x"
+task finish kappa-old --rescue >/dev/null 2>&1
+
+rd2="$WORK/rescue-nodb"; cp -Rp "$rd1" "$rd2"; sed -i.bak 's/^DB=.*/DB=/' "$rd2/MANIFEST.txt"
+r=$(task restore "$rd2" kappa-nodb); x=$(there "$T/kappa-nodb")
+check "restore of a task without a database exits successfully" PASS "$r" "$x"
+task finish kappa-nodb --rescue >/dev/null 2>&1
+
+LOCK="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
+mkdir "$LOCK"; echo 999999 > "$LOCK/pid"                       # left by a process that is gone
+r=$(task start mu --no-claude --no-install); x=$(gone "$LOCK")
+check "port lock left by a finished process is taken over and released" PASS "$r" "$x"
+sh -c 'mkdir "$1" && echo $$ > "$1/pid" && sleep 1 && rm -f "$1/pid" && rmdir "$1"' _ "$LOCK" & holder=$!
+sleep 0.2
+r=$(task start nu --no-claude --no-install); wait "$holder"
+x=$(there "$T/nu/.ai-task.env"); [ "$x" = ok ] && x=$(gone "$LOCK")
+[ "$x" = ok ] && [ "$(grep '^PORT=' "$T/nu/.ai-task.env")" != "$(grep '^PORT=' "$T/mu/.ai-task.env")" ] || x="${x/ok/same port as mu}"
+check "start waits for another start holding the port lock, then picks a different port" PASS "$r" "$x"
+task finish mu --rescue >/dev/null 2>&1; task finish nu --rescue >/dev/null 2>&1
+( cd "$P" && bash scripts/ai-task.sh start xi --no-claude --no-install ) > "$WORK/xi.txt" 2>&1 & p1=$!
+( cd "$P" && bash scripts/ai-task.sh start omicron --no-claude --no-install ) > "$WORK/omicron.txt" 2>&1 & p2=$!
+r=PASS; wait "$p1" || r=FAIL; wait "$p2" || r=FAIL
+x=ok; [ "$(grep '^PORT=' "$T/xi/.ai-task.env" 2>/dev/null)" != "$(grep '^PORT=' "$T/omicron/.ai-task.env" 2>/dev/null)" ] || x="both tasks got the same port"
+check "two starts at the same moment get different ports" PASS "$r" "$x"
 cd "$WORK" || exit 1
 
 echo
