@@ -502,11 +502,14 @@ wait "$holder"
 [ "$x" = ok ] && [ "$(grep '^PORT=' "$T/nu/.ai-task.env")" != "$(grep '^PORT=' "$T/mu/.ai-task.env")" ] || x="${x/ok/same port as mu}"
 check "start waits for another start holding the port lock, then picks a different port" PASS "$r" "$x"
 task finish mu --rescue >/dev/null 2>&1; task finish nu --rescue >/dev/null 2>&1
-( cd "$P" && bash scripts/ai-task.sh start xi --no-claude --no-install ) > "$WORK/xi.txt" 2>&1 & p1=$!
-( cd "$P" && bash scripts/ai-task.sh start omicron --no-claude --no-install ) > "$WORK/omicron.txt" 2>&1 & p2=$!
+# rho and sigma hash to the same first-choice port in this two-port range. Without the lock both
+# pick it before either writes its settings, and their simultaneous `git worktree add` calls also
+# collide on .git/config, so one start fails (observed 5 of 5 runs with the lock disabled).
+( cd "$P" && bash scripts/ai-task.sh start rho --no-claude --no-install ) > "$WORK/rho.txt" 2>&1 & p1=$!
+( cd "$P" && bash scripts/ai-task.sh start sigma --no-claude --no-install ) > "$WORK/sigma.txt" 2>&1 & p2=$!
 r=PASS; wait "$p1" || r=FAIL; wait "$p2" || r=FAIL
-x=ok; [ "$(grep '^PORT=' "$T/xi/.ai-task.env" 2>/dev/null)" != "$(grep '^PORT=' "$T/omicron/.ai-task.env" 2>/dev/null)" ] || x="both tasks got the same port"
-check "two starts at the same moment get different ports" PASS "$r" "$x"
+x=ok; [ "$(grep '^PORT=' "$T/rho/.ai-task.env" 2>/dev/null)" != "$(grep '^PORT=' "$T/sigma/.ai-task.env" 2>/dev/null)" ] || x="both tasks got the same port"
+check "two starts at the same moment both succeed, with different ports" PASS "$r" "$x"
 cd "$WORK" || exit 1
 
 echo
