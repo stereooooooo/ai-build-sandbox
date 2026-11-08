@@ -1,0 +1,47 @@
+name: signoff-guard
+
+# GitHub runs the default branch's copy of this workflow for both triggers below, and the
+# checkout uses the default branch, so a pull request cannot change what runs here. The pull
+# request's commits are fetched as data only. The result is the commit status "owner-signoff"
+# on the pull request's head; make that status the required check, not this job.
+# Read the trust model at the top of scripts/signoff-guard.sh: other workflows that can write
+# statuses could post the same status, and a /signoff comment is not proof of human review.
+# There is deliberately no manual (workflow_dispatch) trigger: a manual run can use another
+# branch's copy of this file. To re-run, edit a comment or close and reopen the pull request.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: signoff-guard-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+    steps:
+      - name: Check out the trusted default branch (not the pull request)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Fetch the pull request's commits as data
+        run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+      - name: Evaluate owner sign-off
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_REF: origin/${{ github.event.repository.default_branch }}
+          FETCHED_HEAD_REF: refs/remotes/origin/pr-head
+          OWNERS: ${{ vars.SIGNOFF_OWNERS || github.repository_owner }}
+        run: bash scripts/signoff-guard.sh

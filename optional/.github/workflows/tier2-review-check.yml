@@ -1,0 +1,30 @@
+name: tier2-review-check
+
+# EXPERIMENTAL. Copy into .github/workflows/ (and the script into scripts/) only after the
+# live tests in README.md pass. Until then, the owner confirms review completion by hand.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: tier2-review-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tier2-review-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the Codex review covers the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWER_LOGIN: ${{ vars.CODEX_REVIEWER_LOGIN }}
+        run: bash scripts/tier2-review-check.sh

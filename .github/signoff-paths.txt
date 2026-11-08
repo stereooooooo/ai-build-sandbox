@@ -1,0 +1,8 @@
+# Paths whose changes need the owner's sign-off (git glob syntax, one per line).
+# The guard's own files are always protected and do not need to be listed.
+# Keep this list narrow: rules and content that need the owner's judgment, not every file
+# that touches important data. Examples (uncomment and replace with your own):
+#   src/clinical/rules/**        clinical decision rules
+#   scripts/seed.ts              data written to production on deploy
+#   src/billing/pricing.ts       prices and charges
+src/rules/**
