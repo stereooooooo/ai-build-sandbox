@@ -80,7 +80,7 @@ private folder outside the repository (`~/.ai-task-rescue/...`, permissions 700,
 and compared with the originals; a `MANIFEST.txt` records what was saved and how to restore it.
 `COPY_FILES` and `.ai-task.env` are never committed to a rescue branch, even if the task changed
 `.gitignore`; a changed copy goes to the private folder instead.
-Any failure leaves the worktree untouched. **Task databases are kept** unless you pass
+It refuses a task that contains another git repository (a rescue could only save a pointer to it). Any failure leaves the worktree untouched. **Task databases are kept** unless you pass
 `--drop-db`; then a dump is written and checked first if `DB_DUMP_CMD` is set.
 
 **restore** recreates a task from a rescue folder at the exact commit its manifest records: branch, fresh copies of `COPY_FILES` from the main checkout, then the rescued local files on top (verified), a new port. Ports are chosen under a lock, so simultaneous starts or restores never share one.
