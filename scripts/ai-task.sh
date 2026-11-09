@@ -146,6 +146,8 @@ copy_local_files() { # worktree : copy each gitignored COPY_FILES entry from the
   local wt="$1" f
   set -f
   for f in $COPY_FILES; do
+    # A file the worktree's own commit tracks belongs to that commit: never overwrite it.
+    git -C "$wt" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 && continue
     if [ -f "$ROOT/$f" ]; then
       if git check-ignore -q "$f"; then mkdir -p "$(dirname "$wt/$f")"; cp -p "$ROOT/$f" "$wt/$f"
       else echo "warning: $f is not gitignored; not copied" >&2; fi

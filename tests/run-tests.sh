@@ -604,6 +604,18 @@ x=$(has "SECRET=local" "$T/pi-back/.env.local"); [ "$x" = ok ] && x=$(has "{}" "
 check "restore copies unchanged local settings files again" PASS "$r" "$x"
 task finish pi-back --rescue >/dev/null 2>&1
 
+# A settings file the task committed belongs to the task's history: restore must not replace it.
+task start sigma --no-claude --no-install >/dev/null
+( cd "$T/sigma" && printf '!.env.local\n' >> .gitignore && echo "SOURCE=task-committed" > .env.local \
+  && git add .gitignore .env.local && git commit -qm "track settings" )
+task finish sigma --rescue >/dev/null 2>&1
+rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-sigma | head -n 1)
+r=$(task restore "$rd" sigma-back)
+x=$(has "SOURCE=task-committed" "$T/sigma-back/.env.local")
+[ "$x" = ok ] && [ -n "$(git -C "$T/sigma-back" status --porcelain -- .env.local)" ] && x="restore left the tracked settings file modified"
+check "restore keeps a settings file the task committed" PASS "$r" "$x"
+task finish sigma-back --rescue >/dev/null 2>&1
+
 # finish refreshes only origin, so a stale tracking ref on another remote proves nothing.
 task start rho --no-claude --no-install >/dev/null
 ( cd "$T/rho" && echo x > rho.txt && git add rho.txt && git commit -qm "local only" )
