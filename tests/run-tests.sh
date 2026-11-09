@@ -576,6 +576,57 @@ check "finish of a detached task refuses and says it is detached" FAIL "$r" "$x"
 rm -f "$FIX/prlist-.json"
 task finish xi --rescue >/dev/null 2>&1
 
+# Copied local settings (COPY_FILES) hold credentials: a rescue must never push them, even when
+# the task un-ignored one, and a changed copy is kept privately and restored.
+task start omicron --no-claude --no-install >/dev/null
+( cd "$T/omicron" && printf '!.env.local\n' >> .gitignore && echo "SECRET=task-changed" > .env.local && echo work > notes.txt )
+r=$(task finish omicron --rescue)
+rb=$(git ls-remote "$O" 'refs/heads/rescue/*omicron' | awk '{print $2}' | head -n 1)
+x=$(gone "$T/omicron")
+[ "$x" = ok ] && { [ -n "$rb" ] || x="no rescue branch"; }
+[ "$x" = ok ] && git --git-dir="$O" cat-file -e "$rb:.env.local" 2>/dev/null && x="credential file pushed to $rb"
+[ "$x" = ok ] && { git --git-dir="$O" cat-file -e "$rb:notes.txt" 2>/dev/null || x="the task's other work is missing from the rescue branch"; }
+rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-omicron | head -n 1)
+[ "$x" = ok ] && { grep -q "SECRET=task-changed" "$rd/files/.env.local" 2>/dev/null || x="changed settings file not kept privately"; }
+check "rescue never pushes a copied local settings file, even if the task un-ignored it" PASS "$r" "$x"
+r=$(task restore "$rd" omicron-back)
+x=$(has "SECRET=task-changed" "$T/omicron-back/.env.local")
+check "restore brings back the privately kept settings file" PASS "$r" "$x"
+task finish omicron-back --rescue >/dev/null 2>&1
+
+# An unchanged local settings file is left out of a rescue; restore must copy it again.
+task start pi --no-claude --no-install >/dev/null
+echo draft > "$T/pi/draft.txt"
+task finish pi --rescue >/dev/null 2>&1
+rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-pi | head -n 1)
+r=$(task restore "$rd" pi-back)
+x=$(has "SECRET=local" "$T/pi-back/.env.local"); [ "$x" = ok ] && x=$(has "{}" "$T/pi-back/config/local.json")
+check "restore copies unchanged local settings files again" PASS "$r" "$x"
+task finish pi-back --rescue >/dev/null 2>&1
+
+# A settings file the task committed belongs to the task's history: restore must not replace it.
+task start sigma --no-claude --no-install >/dev/null
+( cd "$T/sigma" && printf '!.env.local\n' >> .gitignore && echo "SOURCE=task-committed" > .env.local \
+  && git add .gitignore .env.local && git commit -qm "track settings" )
+task finish sigma --rescue >/dev/null 2>&1
+rd=$(ls -dt "$TEST_RESCUE_DIR"/app/*-sigma | head -n 1)
+r=$(task restore "$rd" sigma-back)
+x=$(has "SOURCE=task-committed" "$T/sigma-back/.env.local")
+[ "$x" = ok ] && [ -n "$(git -C "$T/sigma-back" status --porcelain -- .env.local)" ] && x="restore left the tracked settings file modified"
+check "restore keeps a settings file the task committed" PASS "$r" "$x"
+task finish sigma-back --rescue >/dev/null 2>&1
+
+# finish refreshes only origin, so a stale tracking ref on another remote proves nothing.
+task start rho --no-claude --no-install >/dev/null
+( cd "$T/rho" && echo x > rho.txt && git add rho.txt && git commit -qm "local only" )
+git -C "$P" remote add backup "$WORK/no-such-backup.git"
+git -C "$P" update-ref refs/remotes/backup/task/rho "$(git -C "$T/rho" rev-parse HEAD)"
+r=$(task finish rho)
+x=$(there "$T/rho"); [ "$x" = ok ] && x=$(has "commits not on any remote branch" "$WORK/out.txt")
+check "a stale ref on another remote does not count as a backup" FAIL "$r" "$x"
+git -C "$P" update-ref -d refs/remotes/backup/task/rho; git -C "$P" remote remove backup
+task finish rho --rescue >/dev/null 2>&1
+
 LOCK="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"
 { bash -c 'exec 9>>"$1"; perl -e "use Fcntl qw(:flock); open(my \$f, \">&=\", 9); flock(\$f, LOCK_EX)"; kill -9 $$' _ "$LOCK"; } 2>/dev/null
 r=$(task start mu --no-claude --no-install)

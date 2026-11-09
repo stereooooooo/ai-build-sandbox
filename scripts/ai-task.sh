@@ -130,7 +130,8 @@ pr_label() {
   read -r s n _h <<< "$(pr_info "$1")"
   case "$s" in OPEN|MERGED|CLOSED) echo "$s #$n" ;; *) echo "$s" ;; esac
 }
-unpushed_count() { git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || echo "?"; }
+# Only origin counts: finish refreshes origin alone, so another remote's tracking refs may be stale.
+unpushed_count() { git -C "$1" rev-list --count HEAD --not --remotes=origin 2>/dev/null || echo "?"; }
 
 ignored_entries() { # worktree -> ignored paths (folders end in "/"), one per line
   local rec
@@ -140,6 +141,19 @@ ignored_entries() { # worktree -> ignored paths (folders end in "/"), one per li
 }
 ignored_files_in() { # worktree folder/ -> every ignored file under it, one per line
   git -C "$1" ls-files --others --ignored --exclude-standard -z -- "$2" | tr '\0' '\n'
+}
+copy_local_files() { # worktree : copy each gitignored COPY_FILES entry from the main checkout
+  local wt="$1" f
+  set -f
+  for f in $COPY_FILES; do
+    # A file the worktree's own commit tracks belongs to that commit: never overwrite it.
+    git -C "$wt" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 && continue
+    if [ -f "$ROOT/$f" ]; then
+      if git check-ignore -q "$f"; then mkdir -p "$(dirname "$wt/$f")"; cp -p "$ROOT/$f" "$wt/$f"
+      else echo "warning: $f is not gitignored; not copied" >&2; fi
+    fi
+  done
+  set +f
 }
 is_disposable() { # worktree entry
   local wt="$1" e="$2" f pat
@@ -195,14 +209,7 @@ start)
   git worktree add --quiet -b "$branch" "$wt" "origin/$DEFAULT_BRANCH"
   base="$(git -C "$wt" rev-parse HEAD)"
 
-  set -f
-  for f in $COPY_FILES; do
-    if [ -f "$ROOT/$f" ]; then
-      if git check-ignore -q "$f"; then mkdir -p "$(dirname "$wt/$f")"; cp -p "$ROOT/$f" "$wt/$f"
-      else echo "warning: $f is not gitignored; not copied" >&2; fi
-    fi
-  done
-  set +f
+  copy_local_files "$wt"
 
   ( umask 077
   {
@@ -366,8 +373,20 @@ finish)
       fi
       if [ -n "$dirty" ]; then
         git -C "$wt" add -A
-        git -C "$wt" commit --quiet --no-verify -m "rescue: uncommitted work from task $name"
-        head="$(git -C "$wt" rev-parse HEAD)"
+        # Local settings copied into the task (COPY_FILES) and .ai-task.env hold credentials:
+        # never commit them, even if the task changed .gitignore. A changed copy is kept privately.
+        set -f
+        for f in .ai-task.env $COPY_FILES; do
+          if git -C "$wt" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 && ! git -C "$wt" cat-file -e "HEAD:$f" 2>/dev/null; then
+            git -C "$wt" rm --cached --quiet -- "$f" || { set +f; die "cannot leave $f out of the rescue; nothing removed"; }
+            [ "$f" = .ai-task.env ] || is_disposable "$wt" "$f" || keep="$keep$f"$'\n'
+          fi
+        done
+        set +f
+        if ! git -C "$wt" diff --cached --quiet; then
+          git -C "$wt" commit --quiet --no-verify -m "rescue: uncommitted work from task $name"
+          head="$(git -C "$wt" rev-parse HEAD)"
+        fi
       fi
       git -C "$wt" push --quiet origin "HEAD:refs/heads/$rescue_branch" || die "rescue push failed; nothing removed"
       git fetch --quiet origin "$rescue_branch"
@@ -467,6 +486,9 @@ restore)
   port="$(pick_port "$name")" || die "no free port"
   mkdir -p "$ROOT/$WORKTREE_DIR"
   git worktree add --quiet -b "$branch" "$wt" "$start_at"
+  # Unchanged local settings files are not part of a rescue: copy them again as start does,
+  # before the rescued files, so a rescued (changed) copy wins.
+  copy_local_files "$wt"
   if [ -d "$rdir/files" ]; then
     cp -Rp "$rdir/files/." "$wt/"
     while IFS= read -r f; do

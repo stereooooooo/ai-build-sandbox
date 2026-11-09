@@ -69,7 +69,7 @@ starts `claude --continue` in the task folder. Use it when reopening a session. 
 a database task, regenerate its connection settings first; resume refuses an unverified database.
 
 **finish** removes a task only if nothing would be lost. It first fetches with pruning, so a branch deleted on GitHub no longer counts as a copy, and stops if GitHub cannot be reached. It stops, changing nothing, when there
-are uncommitted changes, commits not on any remote branch, gitignored files other than
+are uncommitted changes, commits not on `origin` (other remotes are not refreshed, so they do not count), gitignored files other than
 `DISPOSABLE` paths and unchanged copies of `COPY_FILES`, or a pull request state it cannot
 confirm or that is open. Unknown ignored files and local data (such as `.wrangler/state`) are
 treated as work.
@@ -78,10 +78,12 @@ treated as work.
 `rescue/<date>-<task>` branch (checked against the remote); other local files are copied to a
 private folder outside the repository (`~/.ai-task-rescue/...`, permissions 700, never pushed)
 and compared with the originals; a `MANIFEST.txt` records what was saved and how to restore it.
+`COPY_FILES` and `.ai-task.env` are never committed to a rescue branch, even if the task changed
+`.gitignore`; a changed copy goes to the private folder instead.
 Any failure leaves the worktree untouched. **Task databases are kept** unless you pass
 `--drop-db`; then a dump is written and checked first if `DB_DUMP_CMD` is set.
 
-**restore** recreates a task from a rescue folder at the exact commit its manifest records: branch, local files (verified), a new port. Ports are chosen under a lock, so simultaneous starts or restores never share one.
+**restore** recreates a task from a rescue folder at the exact commit its manifest records: branch, fresh copies of `COPY_FILES` from the main checkout, then the rescued local files on top (verified), a new port. Ports are chosen under a lock, so simultaneous starts or restores never share one.
 
 Written for bash 3.2 (the macOS default). Codex ran the original v3.4 suite (72 passed) and
 this reviewed copy (78 passed) under macOS bash 3.2.57; the sandbox fixes bring it to 85. The tests mock GitHub, Claude and
