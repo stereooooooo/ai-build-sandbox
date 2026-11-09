@@ -629,14 +629,16 @@ task finish rho --rescue >/dev/null 2>&1
 
 # A rescue can only record an untracked nested repository as a pointer: refuse, keep everything.
 task start tau --no-claude --no-install >/dev/null
-( cd "$T/tau" && mkdir inner && cd inner && git init -q && echo one > a.txt && git add a.txt && git commit -qm inner \
-  && echo "uncommitted" >> a.txt )
-r=$(task finish tau --rescue)
-x=$(there "$T/tau/inner/.git"); [ "$x" = ok ] && x=$(has "another git repository" "$WORK/out.txt")
-[ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*tau' | grep -q tau && x="rescue branch pushed although the task was refused"; }
-[ "$x" = ok ] && { grep -q uncommitted "$T/tau/inner/a.txt" || x="nested repository's edit lost"; }
-check "finish --rescue refuses a task that contains a nested repository" FAIL "$r" "$x"
-rm -rf "$T/tau/inner"
+for inner in inner "café notes"; do
+  ( cd "$T/tau" && mkdir "$inner" && cd "$inner" && git init -q && echo one > a.txt && git add a.txt && git commit -qm inner \
+    && echo "uncommitted" >> a.txt )
+  r=$(task finish tau --rescue)
+  x=$(there "$T/tau/$inner/.git"); [ "$x" = ok ] && x=$(has "another git repository" "$WORK/out.txt")
+  [ "$x" = ok ] && { git ls-remote "$O" 'refs/heads/rescue/*tau' | grep -q tau && x="rescue branch pushed although the task was refused"; }
+  [ "$x" = ok ] && { grep -q uncommitted "$T/tau/$inner/a.txt" || x="nested repository's edit lost"; }
+  check "finish --rescue refuses a task that contains a nested repository ($inner)" FAIL "$r" "$x"
+  rm -rf "${T:?}/tau/$inner"
+done
 task finish tau --rescue >/dev/null 2>&1
 
 LOCK="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/ai-task-port.lock"

@@ -363,7 +363,10 @@ finish)
   if [ "$rescue" = 1 ]; then
     # git add -A records an untracked nested repository only as a pointer (gitlink), not its
     # files or commits, so a rescue would lose it. Refuse before anything changes.
-    nested="$(git -C "$wt" ls-files --others --exclude-standard | grep '/$' || true)"
+    # -z: unquoted paths, so names with accents or spaces are still seen (Git quotes them otherwise).
+    nested="$(git -C "$wt" ls-files --others --exclude-standard -z | while IFS= read -r -d '' p; do
+      case "$p" in (*/) printf '%s\n' "$p" ;; esac   # "(" form: bash 3.2 misparses ")" inside $( )
+    done)"
     if [ -n "$nested" ]; then
       echo "Not removing $name; nothing was changed:"
       echo "- it contains another git repository, which a rescue cannot save:"
